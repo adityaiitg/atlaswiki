@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/atlaswiki-parser",
+    "crates/atlaswiki-core",
+    "crates/atlaswiki-cli",
+    "crates/atlaswiki-mcp",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Aditya Pratap Singh <adsingh@zetaglobal.com>"]
+license = "MIT"
+repository = "https://github.com/adityaiitg/atlaswiki"
+homepage = "https://github.com/adityaiitg/atlaswiki"
+keywords = ["markdown", "wiki", "knowledge-graph", "semantic-search", "obsidian", "pkb"]
+categories = ["command-line-utilities", "development-tools"]
+
+[workspace.dependencies]
+anyhow = "1.0"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+pulldown-cmark = { version = "0.12", default-features = false, features = ["simd"] }
+rusqlite = { version = "0.31", features = ["bundled", "bundled-full"] }
+petgraph = { version = "0.6", features = ["serde-1"] }
+rayon = "1.10"
+ignore = "0.4"
+sha2 = "0.10"
+regex = "1.10"
+clap = { version = "4.5", features = ["derive", "env", "cargo"] }
+colored = "2.1"
+tempfile = "3.10"
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
+safetensors = "0.8"
+hf-hub = "0.5"
+half = "2.7"
+tiny_http = "0.12"
+notify = "6.1"
+

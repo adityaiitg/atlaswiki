@@ -1,0 +1,21 @@
+[package]
+name = "atlaswiki-parser"
+description = "Markdown AST, Wikilink, Tag, Callout, and Section parser for AtlasWiki"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+pulldown-cmark.workspace = true
+regex.workspace = true
+sha2.workspace = true

@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AtlasWiki — Second Brain Visualizer</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card-bg: #161b22;
+      --card-border: #30363d;
+      --text: #c9d1d9;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --accent-hover: #79c0ff;
+      --node-doc: #58a6ff;
+      --node-dangling: #f85149;
+      --node-tag: #d29922;
+      --link: #30363d;
+      --link-highlight: #58a6ff;
+      --sidebar-width: 380px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      overflow: hidden;
+      display: flex;
+      height: 100vh;
+      width: 100vw;
+    }
+    #graph-container {
+      flex: 1;
+      height: 100%;
+      position: relative;
+    }
+    svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    /* Controls Header */
+    #top-bar {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      z-index: 10;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      background: rgba(22, 27, 34, 0.85);
+      backdrop-filter: blur(8px);
+      padding: 8px 16px;
+      border-radius: 8px;
+      border: 1px solid var(--card-border);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    }
+    .logo {
+      font-weight: 700;
+      font-size: 16px;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .badge {
+      background: #238636;
+      color: #fff;
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 12px;
+    }
+    input#search-input {
+      background: #0d1117;
+      border: 1px solid var(--card-border);
+      color: #fff;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      width: 220px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input#search-input:focus {
+      border-color: var(--accent);
+    }
+    .btn {
+      background: #21262d;
+      border: 1px solid var(--card-border);
+      color: var(--text);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s;
+    }
+    .btn:hover {
+      background: #30363d;
+      color: #fff;
+    }
+    .btn-primary {
+      background: #1f6feb;
+      border-color: #388bfd;
+      color: #fff;
+    }
+    .btn-primary:hover {
+      background: #388bfd;
+    }
+    /* Stats pill */
+    #stats-pill {
+      position: absolute;
+      bottom: 16px;
+      left: 16px;
+      z-index: 10;
+      background: rgba(22, 27, 34, 0.85);
+      backdrop-filter: blur(8px);
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--card-border);
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    /* Side Drawer */
+    #drawer {
+      width: var(--sidebar-width);
+      height: 100%;
+      background: var(--card-bg);
+      border-left: 1px solid var(--card-border);
+      display: flex;
+      flex-direction: column;
+      transform: translateX(100%);
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      z-index: 20;
+      box-shadow: -4px 0 16px rgba(0, 0, 0, 0.5);
+    }
+    #drawer.open {
+      transform: translateX(0);
+    }
+    .drawer-header {
+      padding: 16px;
+      border-bottom: 1px solid var(--card-border);
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+    .drawer-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: #fff;
+      word-break: break-word;
+    }
+    .close-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 20px;
+      cursor: pointer;
+      padding: 0 4px;
+    }
+    .close-btn:hover {
+      color: #fff;
+    }
+    .drawer-content {
+      padding: 16px;
+      overflow-y: auto;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .meta-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .tag-badge {
+      background: #388bfd1a;
+      color: #58a6ff;
+      border: 1px solid #388bfd4d;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 12px;
+    }
+    .drawer-section-title {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 700;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    .backlink-card {
+      background: #0d1117;
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      padding: 10px;
+      font-size: 13px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: border-color 0.2s;
+    }
+    .backlink-card:hover {
+      border-color: var(--accent);
+    }
+    .backlink-title {
+      font-weight: 600;
+      color: var(--accent);
+      margin-bottom: 4px;
+    }
+    .backlink-snippet {
+      color: var(--text-muted);
+      font-size: 12px;
+      line-height: 1.4;
+      font-style: italic;
+    }
+    .note-content-preview {
+      background: #0d1117;
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      padding: 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      max-height: 300px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    }
+    /* Node and Link styling */
+    .node circle {
+      stroke-width: 2px;
+      transition: stroke-width 0.2s, r 0.2s;
+      cursor: pointer;
+    }
+    .node:hover circle {
+      stroke: #fff !important;
+      stroke-width: 3px;
+    }
+    .node text {
+      font-size: 11px;
+      fill: var(--text-muted);
+      pointer-events: none;
+      text-anchor: middle;
+      user-select: none;
+    }
+    .node.active circle {
+      stroke: #fff !important;
+      stroke-width: 4px;
+    }
+    .node.dimmed {
+      opacity: 0.15;
+    }
+    .link {
+      stroke: var(--link);
+      stroke-opacity: 0.6;
+      transition: stroke 0.2s, stroke-opacity 0.2s, stroke-width 0.2s;
+    }
+    .link.highlighted {
+      stroke: var(--accent);
+      stroke-opacity: 1;
+      stroke-width: 2px;
+    }
+    .link.dimmed {
+      opacity: 0.05;
+    }
+  </style>
+</head>
+<body>
+  <div id="graph-container">
+    <div id="top-bar">
+      <div class="logo">
+        <span>AtlasWiki</span>
+        <span class="badge">PKB Graph</span>
+      </div>
+      <input type="text" id="search-input" placeholder="Search notes or tags..." autocomplete="off">
+      <button class="btn" id="btn-focus">Focus Neighborhood</button>
+      <button class="btn" id="btn-reset">Reset View</button>
+    </div>
+
+    <div id="stats-pill">Loading vault knowledge graph...</div>
+    <svg id="graph-svg"></svg>
+  </div>
+
+  <div id="drawer">
+    <div class="drawer-header">
+      <div>
+        <h2 class="drawer-title" id="drawer-title">Note Title</h2>
+        <div id="drawer-path" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;"></div>
+      </div>
+      <button class="close-btn" id="drawer-close">&times;</button>
+    </div>
+    <div class="drawer-content">
+      <div class="meta-tags" id="drawer-tags"></div>
+
+      <div style="display: flex; gap: 12px; font-size: 12px; color: var(--text-muted);">
+        <div>Words: <strong id="drawer-words" style="color: #fff;">-</strong></div>
+        <div>PageRank: <strong id="drawer-pagerank" style="color: #fff;">-</strong></div>
+        <div>Backlinks: <strong id="drawer-backlink-count" style="color: #fff;">-</strong></div>
+      </div>
+
+      <div>
+        <div class="drawer-section-title">Incoming Backlinks</div>
+        <div id="drawer-backlinks-list">No incoming backlinks.</div>
+      </div>
+
+      <div>
+        <div class="drawer-section-title">Note Preview</div>
+        <div class="note-content-preview" id="drawer-preview">Loading content...</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let graphData = { nodes: [], links: [] };
+    let simulation, svg, g, linkElements, nodeElements;
+    let selectedNode = null;
+    let focusMode = false;
+
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+
+    const colorMap = {
+      document: "#58a6ff",
+      dangling: "#f85149",
+      tag: "#d29922",
+      section: "#7ee787"
+    };
+
+    function initGraph() {
+      svg = d3.select("#graph-svg");
+      svg.selectAll("*").remove();
+
+      const zoom = d3.zoom()
+        .scaleExtent([0.1, 8])
+        .on("zoom", (event) => g.attr("transform", event.transform));
+
+      svg.call(zoom);
+      g = svg.append("g");
+
+      simulation = d3.forceSimulation()
+        .force("link", d3.forceLink().id(d => d.id).distance(60))
+        .force("charge", d3.forceManyBody().strength(-140).distanceMax(500))
+        .force("center", d3.forceCenter(width / 2, height / 2))
+        .force("collision", d3.forceCollide().radius(d => nodeRadius(d) + 8));
+
+      fetchData();
+    }
+
+    function nodeRadius(d) {
+      if (d.group === "dangling") return 5;
+      const base = 6;
+      const pr = d.pagerank || 0;
+      return Math.min(base + pr * 18, 24);
+    }
+
+    function nodeColor(d) {
+      return colorMap[d.group] || "#58a6ff";
+    }
+
+    async function fetchData() {
+      try {
+        const res = await fetch("/api/graph");
+        graphData = await res.json();
+
+        // Compute degree
+        const degree = {};
+        graphData.links.forEach(l => {
+          degree[l.source] = (degree[l.source] || 0) + 1;
+          degree[l.target] = (degree[l.target] || 0) + 1;
+        });
+
+        document.getElementById("stats-pill").textContent = 
+          `${graphData.nodes.length} notes · ${graphData.links.length} connections`;
+
+        render();
+      } catch (err) {
+        document.getElementById("stats-pill").textContent = "Error loading graph data: " + err;
+      }
+    }
+
+    function render() {
+      linkElements = g.append("g")
+        .attr("class", "links")
+        .selectAll("line")
+        .data(graphData.links)
+        .enter()
+        .append("line")
+        .attr("class", "link")
+        .attr("stroke-width", 1);
+
+      nodeElements = g.append("g")
+        .attr("class", "nodes")
+        .selectAll("g")
+        .data(graphData.nodes)
+        .enter()
+        .append("g")
+        .attr("class", "node")
+        .call(d3.drag()
+          .on("start", dragstarted)
+          .on("drag", dragged)
+          .on("end", dragended))
+        .on("click", (event, d) => {
+          event.stopPropagation();
+          selectNode(d);
+        });
+
+      nodeElements.append("circle")
+        .attr("r", d => nodeRadius(d))
+        .attr("fill", d => nodeColor(d))
+        .attr("stroke", "#161b22");
+
+      nodeElements.append("text")
+        .attr("dy", d => nodeRadius(d) + 12)
+        .text(d => d.label);
+
+      simulation
+        .nodes(graphData.nodes)
+        .on("tick", ticked);
+
+      simulation.force("link")
+        .links(graphData.links);
+
+      svg.on("click", () => {
+        deselectNode();
+      });
+    }
+
+    function ticked() {
+      linkElements
+        .attr("x1", d => d.source.x)
+        .attr("y1", d => d.source.y)
+        .attr("x2", d => d.target.x)
+        .attr("y2", d => d.target.y);
+
+      nodeElements
+        .attr("transform", d => `translate(${d.x},${d.y})`);
+    }
+
+    function dragstarted(event, d) {
+      if (!event.active) simulation.alphaTarget(0.3).restart();
+      d.fx = d.x;
+      d.fy = d.y;
+    }
+
+    function dragged(event, d) {
+      d.fx = event.x;
+      d.fy = event.y;
+    }
+
+    function dragended(event, d) {
+      if (!event.active) simulation.alphaTarget(0);
+      d.fx = null;
+      d.fy = null;
+    }
+
+    function selectNode(d) {
+      selectedNode = d;
+      nodeElements.classed("active", n => n.id === d.id);
+      openDrawer(d);
+
+      if (focusMode) {
+        applyFocus(d);
+      }
+    }
+
+    function deselectNode() {
+      selectedNode = null;
+      focusMode = false;
+      nodeElements.classed("active", false).classed("dimmed", false);
+      linkElements.classed("highlighted", false).classed("dimmed", false);
+      closeDrawer();
+    }
+
+    function applyFocus(targetNode) {
+      const neighbors = new Set([targetNode.id]);
+      graphData.links.forEach(l => {
+        const s = typeof l.source === 'object' ? l.source.id : l.source;
+        const t = typeof l.target === 'object' ? l.target.id : l.target;
+        if (s === targetNode.id) neighbors.add(t);
+        if (t === targetNode.id) neighbors.add(s);
+      });
+
+      nodeElements.classed("dimmed", n => !neighbors.has(n.id));
+      linkElements
+        .classed("highlighted", l => {
+          const s = typeof l.source === 'object' ? l.source.id : l.source;
+          const t = typeof l.target === 'object' ? l.target.id : l.target;
+          return s === targetNode.id || t === targetNode.id;
+        })
+        .classed("dimmed", l => {
+          const s = typeof l.source === 'object' ? l.source.id : l.source;
+          const t = typeof l.target === 'object' ? l.target.id : l.target;
+          return s !== targetNode.id && t !== targetNode.id;
+        });
+    }
+
+    async function openDrawer(d) {
+      const drawer = document.getElementById("drawer");
+      drawer.classList.add("open");
+
+      document.getElementById("drawer-title").textContent = d.label;
+      document.getElementById("drawer-path").textContent = d.id;
+      document.getElementById("drawer-words").textContent = d.word_count || "-";
+      document.getElementById("drawer-pagerank").textContent = (d.pagerank || 0).toFixed(4);
+
+      // Tags
+      const tagsContainer = document.getElementById("drawer-tags");
+      tagsContainer.innerHTML = "";
+      if (d.group && d.group !== "document" && d.group !== "dangling") {
+        const tagSpan = document.createElement("span");
+        tagSpan.className = "tag-badge";
+        tagSpan.textContent = "#" + d.group;
+        tagsContainer.appendChild(tagSpan);
+      }
+
+      // Fetch backlinks & note details
+      try {
+        const res = await fetch(`/api/note?title=${encodeURIComponent(d.label)}`);
+        if (res.ok) {
+          const noteData = await res.json();
+          document.getElementById("drawer-preview").textContent = noteData.content || noteData.preview || "No content available.";
+        } else {
+          document.getElementById("drawer-preview").textContent = "Unwritten note (dangling reference).";
+        }
+      } catch (err) {
+        document.getElementById("drawer-preview").textContent = "Error loading content: " + err;
+      }
+
+      try {
+        const blRes = await fetch(`/api/backlinks?title=${encodeURIComponent(d.label)}`);
+        if (blRes.ok) {
+          const backlinks = await blRes.json();
+          document.getElementById("drawer-backlink-count").textContent = backlinks.length;
+          const list = document.getElementById("drawer-backlinks-list");
+          list.innerHTML = "";
+
+          if (backlinks.length === 0) {
+            list.innerHTML = "<div style='color: var(--text-muted); font-size: 12px;'>No incoming backlinks.</div>";
+          } else {
+            backlinks.forEach(bl => {
+              const card = document.createElement("div");
+              card.className = "backlink-card";
+              card.innerHTML = `
+                <div class="backlink-title">${bl.source_title} (line ${bl.line_number})</div>
+                <div class="backlink-snippet">${bl.snippet ? bl.snippet : 'Mentioned in note'}</div>
+              `;
+              card.onclick = () => {
+                const node = graphData.nodes.find(n => n.label === bl.source_title);
+                if (node) selectNode(node);
+              };
+              list.appendChild(card);
+            });
+          }
+        }
+      } catch (err) {
+        console.error("Backlinks error:", err);
+      }
+    }
+
+    function closeDrawer() {
+      document.getElementById("drawer").classList.remove("open");
+    }
+
+    // Search filter
+    document.getElementById("search-input").addEventListener("input", (e) => {
+      const q = e.target.value.toLowerCase().trim();
+      if (!q) {
+        nodeElements.classed("dimmed", false);
+        linkElements.classed("dimmed", false);
+        return;
+      }
+
+      nodeElements.classed("dimmed", d => {
+        const matchTitle = d.label.toLowerCase().includes(q);
+        const matchGroup = d.group && d.group.toLowerCase().includes(q);
+        return !(matchTitle || matchGroup);
+      });
+    });
+
+    document.getElementById("drawer-close").onclick = closeDrawer;
+
+    document.getElementById("btn-focus").onclick = () => {
+      if (selectedNode) {
+        focusMode = !focusMode;
+        if (focusMode) {
+          applyFocus(selectedNode);
+        } else {
+          nodeElements.classed("dimmed", false);
+          linkElements.classed("highlighted", false).classed("dimmed", false);
+        }
+      }
+    };
+
+    document.getElementById("btn-reset").onclick = () => {
+      deselectNode();
+      svg.transition().duration(750).call(
+        d3.zoom().transform,
+        d3.zoomIdentity
+      );
+    };
+
+    window.addEventListener("resize", () => {
+      simulation.force("center", d3.forceCenter(window.innerWidth / 2, window.innerHeight / 2));
+      simulation.alpha(0.3).restart();
+    });
+
+    initGraph();
+  </script>
+</body>
+</html>

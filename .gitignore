@@ -1,0 +1,19 @@
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# AtlasWiki internal database
+.atlaswiki/
+tests/fixtures/**/.atlaswiki/
+
+# OS files
+.DS_Store
+._*
+Thumbs.db
+
+# IDE & Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
