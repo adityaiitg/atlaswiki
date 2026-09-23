@@ -1,3 +1,4 @@
+mod lsp;
 mod serve;
 
 use std::fs;
@@ -111,6 +112,58 @@ enum Commands {
         #[arg(help = "Path to vault directory (default: current directory)")]
         path: Option<PathBuf>,
     },
+
+    #[command(about = "Launch Language Server Protocol (LSP) 3.17 stdio server")]
+    Lsp {
+        #[arg(help = "Path to vault directory (default: current directory)")]
+        path: Option<PathBuf>,
+    },
+
+    #[command(about = "Extract Graph RAG connective paths and Steiner tree context for LLM retrieval")]
+    GraphRag {
+        #[arg(help = "Seeds / concept notes to connect")]
+        seeds: Vec<String>,
+        #[arg(short = 'k', long, default_value = "3", help = "Maximum path hops")]
+        max_hops: usize,
+        #[arg(long, help = "Output raw JSON structure")]
+        json: bool,
+    },
+
+    #[command(about = "Generate automated Map of Content (MOC) and living wiki index")]
+    Moc {
+        #[arg(help = "Topic tag or category name (optional, generates full index if omitted)")]
+        topic: Option<String>,
+        #[arg(long, help = "Dry-run without modifying files on disk")]
+        dry_run: bool,
+        #[arg(long, help = "Output report in JSON format")]
+        json: bool,
+    },
+
+    #[command(about = "Node2Vec graph embeddings and topological similarity")]
+    Topology {
+        #[command(subcommand)]
+        command: TopologyCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum TopologyCommands {
+    #[command(about = "Train Node2Vec topological embeddings on vault graph")]
+    Train {
+        #[arg(short = 'd', long, default_value = "32", help = "Embedding dimensions")]
+        dimensions: usize,
+        #[arg(short = 'w', long, default_value = "10", help = "Walks per node")]
+        num_walks: usize,
+    },
+    #[command(about = "Find topologically similar notes using graph embeddings")]
+    Similar {
+        #[arg(help = "Target note title")]
+        note: String,
+        #[arg(short = 'n', long, default_value = "5", help = "Number of similar notes")]
+        limit: usize,
+        #[arg(long, help = "Output results in JSON format")]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -170,6 +223,19 @@ fn main() -> Result<()> {
         Commands::Mcp { path } => {
             let vault_root = path.unwrap_or(default_vault);
             cmd_mcp(&vault_root)?;
+        }
+        Commands::Lsp { path } => {
+            let vault_root = path.unwrap_or(default_vault);
+            cmd_lsp(&vault_root)?;
+        }
+        Commands::GraphRag { seeds, max_hops, json } => {
+            cmd_graph_rag(&default_vault, &seeds, max_hops, json)?;
+        }
+        Commands::Moc { topic, dry_run, json } => {
+            cmd_moc(&default_vault, topic.as_deref(), dry_run, json)?;
+        }
+        Commands::Topology { command } => {
+            cmd_topology(&default_vault, command)?;
         }
     }
 
@@ -730,4 +796,118 @@ fn cmd_mcp(vault_root: &Path) -> Result<()> {
         std::process::exit(status.code().unwrap_or(1));
     }
     Ok(())
+}
+
+fn cmd_lsp(vault_root: &Path) -> Result<()> {
+    let canonical_vault = vault_root.canonicalize().context("Vault path does not exist")?;
+    let db_path = canonical_vault.join(".atlaswiki").join("index.db");
+    if !db_path.exists() {
+        let _ = cmd_index(&canonical_vault, false);
+    }
+    lsp::run_lsp_server(&canonical_vault)?;
+    Ok(())
+}
+
+fn cmd_graph_rag(vault_root: &Path, seeds: &[String], max_hops: usize, json_output: bool) -> Result<()> {
+    let canonical_vault = vault_root.canonicalize().context("Vault path does not exist")?;
+    let db_path = canonical_vault.join(".atlaswiki").join("index.db");
+    if !db_path.exists() {
+        cmd_index(&canonical_vault, false)?;
+    }
+    let storage = StorageEngine::open(&db_path)?;
+    let engine = atlaswiki_core::graph_rag::GraphRagEngine::from_storage(&storage)?;
+    let seed_refs: Vec<&str> = seeds.iter().map(|s| s.as_str()).collect();
+    let result = engine.extract_context(&seed_refs, max_hops, 15, true);
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("{}", result.markdown_context);
+    }
+    Ok(())
+}
+
+fn cmd_moc(vault_root: &Path, topic: Option<&str>, dry_run: bool, json_output: bool) -> Result<()> {
+    let canonical_vault = vault_root.canonicalize().context("Vault path does not exist")?;
+    let synthesizer = atlaswiki_core::synthesis::MocSynthesizer::new(&canonical_vault);
+    if let Some(t) = topic {
+        let reports = synthesizer.generate_moc(Some(t), dry_run)?;
+        if json_output {
+            println!("{}", serde_json::to_string_pretty(&reports)?);
+        } else {
+            for report in reports {
+                println!("{} Generated MOC for topic '{}':", "✓".green(), report.topic.bold());
+                println!("  File:          {}", report.file_path);
+                println!("  Notes indexed: {}", report.note_count);
+                println!("  Hub notes:     {}", report.hub_notes.join(", "));
+            }
+        }
+    } else {
+        let report = synthesizer.generate_living_index(dry_run)?;
+        if json_output {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            println!("{} Generated Living Index:", "✓".green());
+            println!("  File:             {}", report.index_path);
+            println!("  Orphans file:     {}", report.orphans_path);
+            println!("  Total notes:      {}", report.total_notes);
+            println!("  Orphan notes:     {}", report.total_orphans);
+            println!("  MOCs generated:   {}", report.topic_mocs.len());
+        }
+    }
+    Ok(())
+}
+
+fn cmd_topology(vault_root: &Path, command: TopologyCommands) -> Result<()> {
+    let canonical_vault = vault_root.canonicalize().context("Vault path does not exist")?;
+    let db_path = canonical_vault.join(".atlaswiki").join("index.db");
+    if !db_path.exists() {
+        cmd_index(&canonical_vault, false)?;
+    }
+    let storage = StorageEngine::open(&db_path)?;
+
+    match command {
+        TopologyCommands::Train { dimensions, num_walks } => {
+            let docs = load_parsed_vault_docs(&canonical_vault, &storage)?;
+            let kg = KnowledgeGraph::from_documents(&docs);
+            let mut config = atlaswiki_core::topology::Node2VecConfig::default();
+            config.dimensions = dimensions;
+            config.walks_per_node = num_walks;
+            let mut n2v = atlaswiki_core::topology::Node2Vec::from_knowledge_graph(&kg, config);
+            println!("Training Node2Vec topological embeddings for {} nodes...", n2v.node_count());
+            let start = Instant::now();
+            n2v.train();
+            n2v.save_to_storage(&storage)?;
+            println!("{} Node2Vec trained and saved in {:.2?}", "✓".green(), start.elapsed());
+        }
+        TopologyCommands::Similar { note, limit, json } => {
+            let n2v = atlaswiki_core::topology::Node2Vec::load_from_storage(&storage)?;
+            let sim = n2v.most_topologically_similar(&note, limit);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&sim)?);
+            } else {
+                println!("\nTopological neighbors for [[{}]]:", note.bold());
+                for (other, score) in sim {
+                    println!("  - [[{}]] (similarity: {:.3})", other.cyan(), score);
+                }
+                println!();
+            }
+        }
+    }
+    Ok(())
+}
+
+fn load_parsed_vault_docs(vault_root: &Path, storage: &StorageEngine) -> Result<Vec<atlaswiki_parser::ast::ParsedDocument>> {
+    let parser = MarkdownParser::new();
+    let paths = storage.get_all_document_paths()?;
+    let mut docs = Vec::new();
+    for p in paths {
+        let full_p = vault_root.join(&p);
+        if let Ok(content) = fs::read_to_string(&full_p) {
+            if let Ok(doc) = parser.parse_file(&full_p, &content) {
+                docs.push(doc);
+            }
+        }
+    }
+    Ok(docs)
 }

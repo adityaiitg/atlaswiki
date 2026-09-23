@@ -537,15 +537,27 @@
           list.innerHTML = "";
 
           if (backlinks.length === 0) {
-            list.innerHTML = "<div style='color: var(--text-muted); font-size: 12px;'>No incoming backlinks.</div>";
+            const emptyNotice = document.createElement("div");
+            emptyNotice.style.color = "var(--text-muted)";
+            emptyNotice.style.fontSize = "12px";
+            emptyNotice.textContent = "No incoming backlinks.";
+            list.appendChild(emptyNotice);
           } else {
             backlinks.forEach(bl => {
               const card = document.createElement("div");
               card.className = "backlink-card";
-              card.innerHTML = `
-                <div class="backlink-title">${bl.source_title} (line ${bl.line_number})</div>
-                <div class="backlink-snippet">${bl.snippet ? bl.snippet : 'Mentioned in note'}</div>
-              `;
+
+              const titleEl = document.createElement("div");
+              titleEl.className = "backlink-title";
+              titleEl.textContent = `${bl.source_title} (line ${bl.line_number})`;
+
+              const snippetEl = document.createElement("div");
+              snippetEl.className = "backlink-snippet";
+              snippetEl.textContent = bl.snippet ? bl.snippet : 'Mentioned in note';
+
+              card.appendChild(titleEl);
+              card.appendChild(snippetEl);
+
               card.onclick = () => {
                 const node = graphData.nodes.find(n => n.label === bl.source_title);
                 if (node) selectNode(node);

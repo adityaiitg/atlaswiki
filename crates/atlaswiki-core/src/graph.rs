@@ -273,6 +273,24 @@ impl KnowledgeGraph {
         0.0
     }
 
+    /// Returns all document nodes in the knowledge graph.
+    pub fn document_nodes(&self) -> Vec<NoteNode> {
+        self.graph
+            .node_indices()
+            .filter(|&idx| self.graph[idx].node_type == NodeType::Document)
+            .map(|idx| self.graph[idx].clone())
+            .collect()
+    }
+
+    /// Returns the (in_degree, out_degree) for a given note title.
+    pub fn degree(&self, title: &str) -> Option<(usize, usize)> {
+        let lower = title.to_lowercase();
+        let &idx = self.title_map.get(&lower).or_else(|| self.alias_map.get(&lower))?;
+        let in_deg = self.graph.neighbors_directed(idx, Direction::Incoming).count();
+        let out_deg = self.graph.neighbors_directed(idx, Direction::Outgoing).count();
+        Some((in_deg, out_deg))
+    }
+
     /// Returns all incoming backlinks to a given note.
     pub fn get_backlinks(&self, note_title: &str) -> Vec<(NoteNode, LinkEdge)> {
         let lower = note_title.to_lowercase();
@@ -461,5 +479,57 @@ impl KnowledgeGraph {
             total_nodes,
             total_edges,
         }
+    }
+
+    /// Returns a reference to the internal Petgraph `DiGraph`.
+    pub fn raw_graph(&self) -> &DiGraph<NoteNode, LinkEdge> {
+        &self.graph
+    }
+
+    /// Total number of nodes in the graph.
+    pub fn node_count(&self) -> usize {
+        self.graph.node_count()
+    }
+
+    /// Total number of edges in the graph.
+    pub fn edge_count(&self) -> usize {
+        self.graph.edge_count()
+    }
+
+    /// Canonical node ID map.
+    pub fn node_map(&self) -> &HashMap<String, NodeIndex> {
+        &self.node_map
+    }
+
+    /// Lowercase title map.
+    pub fn title_map(&self) -> &HashMap<String, NodeIndex> {
+        &self.title_map
+    }
+
+    /// Returns the NodeIndex for a title, alias, or ID.
+    pub fn resolve_node(&self, title: &str) -> Option<NodeIndex> {
+        let lower = title.to_lowercase();
+        self.title_map
+            .get(&lower)
+            .or_else(|| self.alias_map.get(&lower))
+            .or_else(|| self.node_map.get(title))
+            .copied()
+    }
+
+    /// Returns a reference to the NoteNode weight for a given NodeIndex.
+    pub fn get_node(&self, idx: NodeIndex) -> Option<&NoteNode> {
+        self.graph.node_weight(idx)
+    }
+
+    /// Returns the internal petgraph DiGraph.
+    pub fn graph(&self) -> &DiGraph<NoteNode, LinkEdge> {
+        &self.graph
+    }
+
+    /// Finds the top k most topologically similar notes in the knowledge graph using Node2Vec.
+    pub fn most_topologically_similar(&self, note: &str, k: usize) -> Vec<(String, f32)> {
+        let mut model = crate::topology::Node2Vec::from_knowledge_graph(self, crate::topology::Node2VecConfig::default());
+        model.train();
+        model.most_topologically_similar(note, k)
     }
 }

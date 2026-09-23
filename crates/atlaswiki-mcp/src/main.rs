@@ -287,6 +287,38 @@ fn list_tools() -> Vec<Value> {
                 "properties": {}
             }
         }),
+        json!({
+            "name": "atlaswiki_graph_rag",
+            "description": "Perform Graph RAG multi-hop connective path and Steiner-tree context extraction between concept notes for LLM reasoning.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "seeds": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "List of concept note titles to connect."
+                    },
+                    "max_hops": {
+                        "type": "integer",
+                        "description": "Maximum path length in hops (default: 3)."
+                    }
+                },
+                "required": ["seeds"]
+            }
+        }),
+        json!({
+            "name": "atlaswiki_generate_moc",
+            "description": "Generate or update an automated Map of Content (MOC) index based on tag taxonomy, PageRank centrality, and backlinks.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {
+                        "type": "string",
+                        "description": "Optional topic or tag to generate MOC for. If omitted, generates living vault index."
+                    }
+                }
+            }
+        }),
     ]
 }
 
@@ -333,8 +365,8 @@ fn call_tool(
                 .get_document(title)?
                 .ok_or_else(|| anyhow::anyhow!("Note '{}' not found in vault index", title))?;
 
-            let full_path = vault_root.join(&doc.path);
-            let content = fs::read_to_string(&full_path).unwrap_or_default();
+            let vault = atlaswiki_core::security::VaultRoot::new(&vault_root)?;
+            let content = vault.safe_read_file(&doc.path).unwrap_or_default();
             let sections = storage.get_sections_for_doc(&doc.doc_id)?;
             let outlinks = storage.get_outlinks_for_doc(&doc.doc_id)?;
             let backlinks = storage.get_backlinks(&doc.title)?;
@@ -399,6 +431,32 @@ fn call_tool(
         "atlaswiki_stats" => {
             let stats = storage.get_stats()?;
             Ok(serde_json::to_string_pretty(&stats)?)
+        }
+        "atlaswiki_graph_rag" => {
+            let seeds_val = args
+                .get("seeds")
+                .and_then(|v| v.as_array())
+                .context("Missing or invalid 'seeds' array")?;
+            let seeds: Vec<&str> = seeds_val.iter().filter_map(|v| v.as_str()).collect();
+            let max_hops = args
+                .get("max_hops")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(3) as usize;
+
+            let engine = atlaswiki_core::graph_rag::GraphRagEngine::from_storage(storage)?;
+            let result = engine.extract_context(&seeds, max_hops, 15, true);
+            Ok(result.markdown_context)
+        }
+        "atlaswiki_generate_moc" => {
+            let topic = args.get("topic").and_then(|v| v.as_str());
+            let synthesizer = atlaswiki_core::synthesis::MocSynthesizer::new(vault_root);
+            if let Some(t) = topic {
+                let report = synthesizer.generate_moc(Some(t), false)?;
+                Ok(serde_json::to_string_pretty(&report)?)
+            } else {
+                let report = synthesizer.generate_living_index(false)?;
+                Ok(serde_json::to_string_pretty(&report)?)
+            }
         }
         _ => Err(anyhow::anyhow!("Unknown tool: {}", name)),
     }

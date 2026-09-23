@@ -54,6 +54,13 @@ impl VaultRoot {
         }
 
         let normalized = raw_path.replace('\\', "/");
+        if normalized.starts_with('/')
+            || (normalized.len() >= 2
+                && normalized.as_bytes()[1] == b':'
+                && normalized.as_bytes()[0].is_ascii_alphabetic())
+        {
+            return Err(SecurityError::AbsolutePathEscape(raw_path.to_string()));
+        }
         let path = Path::new(&normalized);
 
         let mut components_stack = Vec::new();
@@ -133,6 +140,26 @@ impl VaultRoot {
             Ok(result)
         }
     }
+
+    /// Safely reads file content inside the vault root, enforcing boundary containment,
+    /// symlink jail verification, and DoS file size limits.
+    pub fn safe_read_file<P: AsRef<Path>>(&self, untrusted_rel_path: P) -> Result<String, SecurityError> {
+        let untrusted_str = untrusted_rel_path.as_ref().to_string_lossy();
+        let canonical_target = self.resolve_within_vault(Path::new(""), &untrusted_str)?;
+
+        let meta = std::fs::metadata(&canonical_target)
+            .map_err(|e| SecurityError::IoError(e.to_string()))?;
+
+        if meta.len() > 10 * 1024 * 1024 {
+            return Err(SecurityError::FileTooLarge {
+                size: meta.len(),
+                max_size: 10 * 1024 * 1024,
+            });
+        }
+
+        std::fs::read_to_string(&canonical_target)
+            .map_err(|e| SecurityError::IoError(e.to_string()))
+    }
 }
 
 /// HTML escaping and link sanitization for safe rendering.
@@ -156,8 +183,11 @@ impl MarkdownSanitizer {
     }
 
     pub fn is_safe_url(url: &str) -> bool {
-        let trimmed = url.trim();
-        let lower = trimmed.to_ascii_lowercase();
+        let filtered: String = url
+            .chars()
+            .filter(|c| !c.is_whitespace() && !c.is_ascii_control())
+            .collect();
+        let lower = filtered.to_ascii_lowercase();
 
         if lower.starts_with("javascript:")
             || lower.starts_with("vbscript:")

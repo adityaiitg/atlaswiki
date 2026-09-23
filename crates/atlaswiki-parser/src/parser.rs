@@ -2,15 +2,20 @@ use std::path::Path;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 
-use crate::ast::{AstChunk, AstLink, AstSection, AstTag, LinkType, ParsedDocument};
+use crate::ast::{
+    AstChunk, AstLink, AstSection, AstTag, LinkType, MetadataField, ParsedDocument,
+};
 use crate::frontmatter::extract_frontmatter;
 
 pub struct MarkdownParser {
     wikilink_re: Regex,
     tag_re: Regex,
     inline_code_re: Regex,
+    inline_math_re: Regex,
     heading_re: Regex,
     markdown_link_re: Regex,
+    dataview_bracket_re: Regex,
+    dataview_inline_re: Regex,
 }
 
 impl Default for MarkdownParser {
@@ -32,10 +37,16 @@ impl MarkdownParser {
             ).unwrap(),
             // Inline code span `...`
             inline_code_re: Regex::new(r"`[^`]*`").unwrap(),
+            // Inline & block math
+            inline_math_re: Regex::new(r"\$\$[^\$]+\$\$|\$[^\$\n]+\$").unwrap(),
             // Markdown heading line ^(#{1,6})\s+(.*)$
             heading_re: Regex::new(r"^(?P<hashes>#{1,6})\s+(?P<title>.*)$").unwrap(),
             // Standard markdown link [text](url)
             markdown_link_re: Regex::new(r"\[(?P<text>[^\]]+)\]\((?P<url>[^)]+)\)").unwrap(),
+            // Dataview bracket syntax [key:: value]
+            dataview_bracket_re: Regex::new(r"\[(?P<key>[a-zA-Z0-9_\-]+)::\s*(?P<val>[^\]]+)\]").unwrap(),
+            // Dataview inline syntax key:: value
+            dataview_inline_re: Regex::new(r"(?:^|[\s,;])(?P<key>[a-zA-Z0-9_\-]+)::\s*(?P<val>[^,\n\]]+)").unwrap(),
         }
     }
 
@@ -161,9 +172,10 @@ impl MarkdownParser {
             .or(first_h1_title)
             .unwrap_or(default_title);
 
-        // 3. Extract Links and Tags (excluding code blocks and inline code)
+        // 3. Extract Links, Tags, and Attributes (excluding code blocks and inline code/math)
         let mut links: Vec<AstLink> = Vec::new();
         let mut tags: Vec<AstTag> = Vec::new();
+        let mut attributes: Vec<MetadataField> = Vec::new();
 
         // Frontmatter tags
         for fmt_tag in &frontmatter.tags {
@@ -241,8 +253,9 @@ impl MarkdownParser {
                 }
             }
 
-            // C. Tags (strip inline code first so `def #foo` is ignored)
+            // C. Tags (strip inline code and math first so `def #foo` or $x # y$ is ignored)
             let sanitized_line = self.inline_code_re.replace_all(line, " ");
+            let sanitized_line = self.inline_math_re.replace_all(&sanitized_line, " ");
             for cap in self.tag_re.captures_iter(&sanitized_line) {
                 if let Some(tag_match) = cap.name("tag") {
                     let tag_str = tag_match.as_str().trim();
@@ -251,6 +264,31 @@ impl MarkdownParser {
                     {
                         tags.push(AstTag {
                             name: tag_str.to_string(),
+                            line_number: line_num,
+                            section_id: current_section_id.clone(),
+                        });
+                    }
+                }
+            }
+
+            // D. Dataview Inline Attributes [key:: value] and key:: value
+            for cap in self.dataview_bracket_re.captures_iter(line) {
+                if let (Some(k), Some(v)) = (cap.name("key"), cap.name("val")) {
+                    attributes.push(MetadataField {
+                        key: k.as_str().trim().to_string(),
+                        value: v.as_str().trim().to_string(),
+                        line_number: line_num,
+                        section_id: current_section_id.clone(),
+                    });
+                }
+            }
+            for cap in self.dataview_inline_re.captures_iter(line) {
+                if let (Some(k), Some(v)) = (cap.name("key"), cap.name("val")) {
+                    let key_str = k.as_str().trim().to_string();
+                    if !attributes.iter().any(|a| a.key == key_str && a.line_number == line_num) {
+                        attributes.push(MetadataField {
+                            key: key_str,
+                            value: v.as_str().trim().to_string(),
                             line_number: line_num,
                             section_id: current_section_id.clone(),
                         });
@@ -272,6 +310,7 @@ impl MarkdownParser {
             chunks,
             word_count,
             content_hash,
+            attributes,
         })
     }
 
@@ -378,4 +417,120 @@ pub fn slugify(s: &str) -> String {
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join("-")
+}
+
+/// Masks fenced code blocks, inline code spans, display math, and inline math
+/// with spaces so regex extractors (tags, wikilinks) do not produce false positives,
+/// while preserving exact line counts, byte lengths, and newline offsets.
+pub fn mask_code_and_math(content: &str) -> String {
+    let mut bytes = content.as_bytes().to_vec();
+    let len = bytes.len();
+    let mut masked = vec![false; len];
+
+    // 1. Mask fenced code blocks ```...``` or ~~~...~~~
+    let mut i = 0;
+    while i < len {
+        if (i == 0 || bytes[i - 1] == b'\n') && (i + 2 < len) {
+            let is_fence = (bytes[i] == b'`' && bytes[i + 1] == b'`' && bytes[i + 2] == b'`')
+                || (bytes[i] == b'~' && bytes[i + 1] == b'~' && bytes[i + 2] == b'~');
+            if is_fence {
+                let fence_char = bytes[i];
+                let start = i;
+                while i < len && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                if i < len {
+                    i += 1;
+                }
+                while i < len {
+                    if (i == 0 || bytes[i - 1] == b'\n')
+                        && i + 2 < len
+                        && bytes[i] == fence_char
+                        && bytes[i + 1] == fence_char
+                        && bytes[i + 2] == fence_char
+                    {
+                        while i < len && bytes[i] != b'\n' {
+                            i += 1;
+                        }
+                        for k in start..i.min(len) {
+                            masked[k] = true;
+                        }
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    // 2. Mask display math $$...$$
+    let mut i = 0;
+    while i + 1 < len {
+        if !masked[i] && bytes[i] == b'$' && bytes[i + 1] == b'$' && (i == 0 || bytes[i - 1] != b'\\') {
+            let start = i;
+            i += 2;
+            while i + 1 < len {
+                if bytes[i] == b'$' && bytes[i + 1] == b'$' && bytes[i - 1] != b'\\' {
+                    i += 2;
+                    for k in start..i {
+                        masked[k] = true;
+                    }
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        i += 1;
+    }
+
+    // 3. Mask inline code `...`
+    let mut i = 0;
+    while i < len {
+        if !masked[i] && bytes[i] == b'`' {
+            let start = i;
+            i += 1;
+            while i < len && bytes[i] != b'`' && bytes[i] != b'\n' {
+                i += 1;
+            }
+            if i < len && bytes[i] == b'`' {
+                i += 1;
+                for k in start..i {
+                    masked[k] = true;
+                }
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    // 4. Mask inline math $...$
+    let mut i = 0;
+    while i < len {
+        if !masked[i] && bytes[i] == b'$' && (i == 0 || bytes[i - 1] != b'\\') {
+            let start = i;
+            i += 1;
+            while i < len && bytes[i] != b'$' && bytes[i] != b'\n' {
+                i += 1;
+            }
+            if i < len && bytes[i] == b'$' && bytes[i - 1] != b'\\' {
+                i += 1;
+                for k in start..i {
+                    masked[k] = true;
+                }
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    for (k, &is_m) in masked.iter().enumerate() {
+        if is_m && bytes[k] != b'\n' && bytes[k] != b'\r' {
+            bytes[k] = b' ';
+        }
+    }
+
+    String::from_utf8(bytes).unwrap_or_else(|_| content.to_string())
 }

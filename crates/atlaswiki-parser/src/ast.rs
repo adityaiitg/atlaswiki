@@ -13,6 +13,17 @@ pub struct ParsedDocument {
     pub chunks: Vec<AstChunk>,
     pub word_count: usize,
     pub content_hash: String,
+    pub attributes: Vec<MetadataField>,
+}
+
+pub type NoteAst = ParsedDocument;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataField {
+    pub key: String,
+    pub value: String,
+    pub line_number: usize,
+    pub section_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

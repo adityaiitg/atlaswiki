@@ -8,6 +8,7 @@ use colored::Colorize;
 use tiny_http::{Header, Response, Server, StatusCode};
 
 use atlaswiki_core::graph::KnowledgeGraph;
+use atlaswiki_core::security::VaultRoot;
 use atlaswiki_core::storage::StorageEngine;
 use atlaswiki_parser::MarkdownParser;
 
@@ -88,8 +89,10 @@ impl WebServer {
                 "/api/note" => {
                     let title = Self::extract_param(query, "title").unwrap_or_default();
                     if let Ok(Some(doc)) = self.storage.get_document(&title) {
-                        let full_path = self.vault_path.join(&doc.path);
-                        let content = std::fs::read_to_string(&full_path).unwrap_or_default();
+                        let content = match VaultRoot::new(&self.vault_path) {
+                            Ok(vault) => vault.safe_read_file(&doc.path).unwrap_or_default(),
+                            Err(_) => String::new(),
+                        };
                         let payload = serde_json::json!({
                             "title": doc.title,
                             "path": doc.path,

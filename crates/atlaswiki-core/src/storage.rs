@@ -300,6 +300,14 @@ impl StorageEngine {
             created_at          INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
         );
 
+        CREATE TABLE IF NOT EXISTS node_embeddings (
+            node_title          TEXT PRIMARY KEY NOT NULL,
+            embedding           BLOB NOT NULL,
+            dimensions          INTEGER NOT NULL,
+            model               TEXT NOT NULL,
+            updated_at          INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        );
+
         CREATE TABLE IF NOT EXISTS sync_manifest (
             path                TEXT PRIMARY KEY NOT NULL,
             doc_id              TEXT NOT NULL,
@@ -330,6 +338,7 @@ impl StorageEngine {
         CREATE INDEX IF NOT EXISTS idx_chunks_section_id ON chunks(section_id);
 
         CREATE INDEX IF NOT EXISTS idx_embeddings_model ON chunk_embeddings(model);
+        CREATE INDEX IF NOT EXISTS idx_node_embeddings_model ON node_embeddings(model);
         "#;
 
         conn.execute_batch(sql)?;
@@ -628,6 +637,75 @@ impl StorageEngine {
         })
     }
 
+    /// Saves node embeddings (e.g. Node2Vec graph embeddings) to SQLite.
+    pub fn save_node_embeddings(
+        &self,
+        embeddings: &[(String, Vec<f32>)],
+        model: &str,
+    ) -> Result<()> {
+        let mut writer = self.writer.lock().unwrap();
+        let tx = writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        let mut stmt = tx.prepare_cached(
+            r#"INSERT INTO node_embeddings (node_title, embedding, dimensions, model, updated_at)
+               VALUES (?1, ?2, ?3, ?4, strftime('%s', 'now'))
+               ON CONFLICT(node_title) DO UPDATE SET
+                   embedding = excluded.embedding,
+                   dimensions = excluded.dimensions,
+                   model = excluded.model,
+                   updated_at = excluded.updated_at"#,
+        )?;
+
+        for (title, vec) in embeddings {
+            let blob = Self::f32_slice_to_bytes(vec);
+            stmt.execute(params![
+                title,
+                blob,
+                vec.len() as i64,
+                model,
+            ])?;
+        }
+
+        drop(stmt);
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Loads all node embeddings for a given model from SQLite.
+    pub fn load_node_embeddings(&self, model: &str) -> Result<Vec<(String, Vec<f32>)>> {
+        self.with_read_conn(|conn| {
+            let mut stmt = conn.prepare("SELECT node_title, embedding FROM node_embeddings WHERE model = ?1")?;
+            let rows = stmt.query_map(params![model], |row| {
+                let title: String = row.get(0)?;
+                let blob: Vec<u8> = row.get(1)?;
+                Ok((title, blob))
+            })?;
+
+            let mut results = Vec::new();
+            for r in rows {
+                let (title, blob) = r?;
+                let vec = Self::bytes_to_f32_vec(&blob)?;
+                results.push((title, vec));
+            }
+            Ok(results)
+        })
+    }
+
+    /// Fetches the embedding for a single node title.
+    pub fn get_node_embedding(&self, note_title: &str, model: &str) -> Result<Option<Vec<f32>>> {
+        self.with_read_conn(|conn| {
+            let mut stmt = conn.prepare("SELECT embedding FROM node_embeddings WHERE node_title = ?1 AND model = ?2")?;
+            let mut rows = stmt.query(params![note_title, model])?;
+            if let Some(row) = rows.next()? {
+                let blob: Vec<u8> = row.get(0)?;
+                let vec = Self::bytes_to_f32_vec(&blob)?;
+                Ok(Some(vec))
+            } else {
+                Ok(None)
+            }
+        })
+    }
+
     /// Full-text BM25 search over chunks with Porter stemming and diacritic removal.
     pub fn search_fts(
         &self,
@@ -909,6 +987,84 @@ impl StorageEngine {
                 paths.push(r?);
             }
             Ok(paths)
+        })
+    }
+
+    /// Retrieve all indexed documents.
+    pub fn get_all_documents(&self) -> Result<Vec<DocumentRecord>> {
+        self.with_read_conn(|conn| {
+            let mut stmt = conn.prepare_cached(
+                r#"SELECT doc_id, path, title, frontmatter_json, word_count, mtime, hash
+                   FROM documents
+                   ORDER BY title ASC"#,
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(DocumentRecord {
+                    doc_id: row.get(0)?,
+                    path: row.get(1)?,
+                    title: row.get(2)?,
+                    frontmatter_json: row.get(3)?,
+                    word_count: row.get::<_, i64>(4)? as usize,
+                    mtime: row.get::<_, i64>(5)? as u64,
+                    hash: row.get(6)?,
+                })
+            })?;
+
+            let mut docs = Vec::new();
+            for r in rows {
+                docs.push(r?);
+            }
+            Ok(docs)
+        })
+    }
+
+    /// Retrieve all distinct tags indexed across the vault.
+    pub fn get_all_tags(&self) -> Result<Vec<String>> {
+        self.with_read_conn(|conn| {
+            let mut stmt = conn.prepare_cached("SELECT DISTINCT tag FROM tags ORDER BY tag ASC")?;
+            let rows = stmt.query_map([], |row| row.get(0))?;
+            let mut tags = Vec::new();
+            for r in rows {
+                tags.push(r?);
+            }
+            Ok(tags)
+        })
+    }
+
+    /// Get count of distinct documents containing a given tag.
+    pub fn get_tag_count(&self, tag: &str) -> Result<usize> {
+        self.with_read_conn(|conn| {
+            let clean_tag = tag.trim_start_matches('#');
+            let mut stmt = conn.prepare_cached(
+                "SELECT COUNT(DISTINCT doc_id) FROM tags WHERE tag = ?1 OR tag = ?2",
+            )?;
+            let with_hash = format!("#{clean_tag}");
+            let count: i64 = stmt.query_row(params![clean_tag, with_hash], |r| r.get(0))?;
+            Ok(count as usize)
+        })
+    }
+    /// Retrieve all node embeddings stored in the database.
+    pub fn get_all_node_embeddings(&self) -> Result<std::collections::HashMap<String, Vec<f32>>> {
+        self.with_read_conn(|conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT node_title, embedding FROM node_embeddings ORDER BY node_title ASC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                let title: String = row.get(0)?;
+                let blob: Vec<u8> = row.get(1)?;
+                let floats: Vec<f32> = blob
+                    .chunks_exact(4)
+                    .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+                    .collect();
+                Ok((title, floats))
+            })?;
+
+            let mut map = std::collections::HashMap::new();
+            for r in rows {
+                let (title, floats) = r?;
+                map.insert(title, floats);
+            }
+            Ok(map)
         })
     }
 }

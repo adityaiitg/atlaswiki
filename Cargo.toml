@@ -39,4 +39,9 @@ hf-hub = "0.5"
 half = "2.7"
 tiny_http = "0.12"
 notify = "6.1"
+argon2 = { version = "0.5", features = ["zeroize"] }
+aes-gcm = { version = "0.10", features = ["zeroize"] }
+zeroize = { version = "1.9", features = ["derive"] }
+rpassword = "7.3"
+rand = "0.8"
 

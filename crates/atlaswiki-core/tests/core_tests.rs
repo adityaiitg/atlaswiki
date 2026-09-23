@@ -222,3 +222,44 @@ fn test_retrieval_query_classification() {
     assert_eq!(QueryClassifier::classify("what is the main idea behind page rank in graphs?").intent, QueryIntent::NaturalLanguage);
     assert_eq!(QueryClassifier::classify("hybrid search algorithm").intent, QueryIntent::BalancedHybrid);
 }
+
+#[test]
+fn test_graph_rag_steiner_tree_and_path_extraction() {
+    let parser = MarkdownParser::new();
+    let doc_a = parser.parse_file(Path::new("A.md"), "# Note A\nConnects to [[Note B]] and [[Note C]]").unwrap();
+    let doc_b = parser.parse_file(Path::new("B.md"), "# Note B\nConnects to [[Note D]]").unwrap();
+    let doc_c = parser.parse_file(Path::new("C.md"), "# Note C\nConnects to [[Note D]]").unwrap();
+    let doc_d = parser.parse_file(Path::new("D.md"), "# Note D\nTerminal note").unwrap();
+
+    let engine = atlaswiki_core::graph_rag::GraphRagEngine::from_documents(&[doc_a, doc_b, doc_c, doc_d]);
+    let result = engine.extract_context(&["Note A", "Note D"], 3, 5, true);
+
+    assert!(!result.paths.is_empty(), "Should find path between Note A and Note D");
+    let linear = result.paths[0].to_linearized_string();
+    assert!(linear.contains("[[Note A]]") && linear.contains("[[Note D]]"));
+    assert!(result.markdown_context.contains("Connective Paths"));
+}
+
+#[test]
+fn test_node2vec_biased_walks_and_similarity() {
+    let parser = MarkdownParser::new();
+    let doc1 = parser.parse_file(Path::new("Rust.md"), "# Rust\nReferences [[Cargo]] and [[Memory Safety]]").unwrap();
+    let doc2 = parser.parse_file(Path::new("Cargo.md"), "# Cargo\nReferences [[Rust]]").unwrap();
+    let doc3 = parser.parse_file(Path::new("Memory.md"), "# Memory Safety\nReferences [[Rust]]").unwrap();
+    let doc4 = parser.parse_file(Path::new("Cooking.md"), "# Cooking\nReferences [[Pasta]]").unwrap();
+    let doc5 = parser.parse_file(Path::new("Pasta.md"), "# Pasta\nReferences [[Cooking]]").unwrap();
+
+    let kg = KnowledgeGraph::from_documents(&[doc1, doc2, doc3, doc4, doc5]);
+    let mut config = atlaswiki_core::topology::Node2VecConfig::default();
+    config.dimensions = 16;
+    config.walks_per_node = 5;
+    config.walk_length = 10;
+    let mut n2v = atlaswiki_core::topology::Node2Vec::from_knowledge_graph(&kg, config);
+    n2v.train();
+
+    let sim = n2v.most_topologically_similar("Rust", 2);
+    assert!(!sim.is_empty());
+    // Rust's closest neighbors should be Cargo or Memory Safety, not Pasta
+    let top_neighbor = &sim[0].0;
+    assert!(top_neighbor == "Cargo" || top_neighbor == "Memory Safety");
+}

@@ -28,3 +28,6 @@ ignore.workspace = true
 rayon.workspace = true
 sha2.workspace = true
 notify.workspace = true
+rpassword.workspace = true
+zeroize.workspace = true
+regex.workspace = true
