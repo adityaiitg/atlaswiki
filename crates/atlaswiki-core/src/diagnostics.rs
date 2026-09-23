@@ -318,23 +318,43 @@ impl DiagnosticsEngine {
         self.notes.insert(doc.path.clone(), meta);
     }
 
-    pub fn resolve_target(&self, target: &str) -> Option<&PathBuf> {
+    pub fn resolve_target(&self, from_doc_path: Option<&std::path::Path>, target: &str) -> Option<&PathBuf> {
         let clean = target.trim_end_matches(".md").trim();
         if clean.is_empty() {
             return None;
         }
 
-        let lower = clean.to_lowercase();
         let p = PathBuf::from(clean);
-        if let Some((path, _)) = self.notes.get_key_value(&p) {
+        let normalized = if let Ok(stripped) = p.strip_prefix("./") {
+            stripped.to_path_buf()
+        } else {
+            p.clone()
+        };
+
+        if let Some((path, _)) = self.notes.get_key_value(&normalized) {
             return Some(path);
         }
 
-        let with_md = PathBuf::from(format!("{clean}.md"));
+        let with_md = PathBuf::from(format!("{}.md", normalized.to_string_lossy()));
         if let Some((path, _)) = self.notes.get_key_value(&with_md) {
             return Some(path);
         }
 
+        // Relative to source file directory
+        if let Some(source_path) = from_doc_path {
+            if let Some(parent) = source_path.parent() {
+                let rel = parent.join(&normalized);
+                if let Some((path, _)) = self.notes.get_key_value(&rel) {
+                    return Some(path);
+                }
+                let rel_md = parent.join(&with_md);
+                if let Some((path, _)) = self.notes.get_key_value(&rel_md) {
+                    return Some(path);
+                }
+            }
+        }
+
+        let lower = clean.to_lowercase();
         if let Some(path) = self.title_to_path.get(&lower) {
             return Some(path);
         }
@@ -372,7 +392,7 @@ impl DiagnosticsEngine {
                 let resolved_path = if is_self_link {
                     Some(&doc.path)
                 } else {
-                    self.resolve_target(&link.target_note)
+                    self.resolve_target(Some(&doc.path), &link.target_note)
                 };
 
                 let location = DiagnosticLocation {

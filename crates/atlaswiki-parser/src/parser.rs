@@ -10,8 +10,6 @@ use crate::frontmatter::extract_frontmatter;
 pub struct MarkdownParser {
     wikilink_re: Regex,
     tag_re: Regex,
-    inline_code_re: Regex,
-    inline_math_re: Regex,
     heading_re: Regex,
     markdown_link_re: Regex,
     dataview_bracket_re: Regex,
@@ -35,10 +33,6 @@ impl MarkdownParser {
             tag_re: Regex::new(
                 r"(?:^|[\s,;:({\[])#(?P<tag>[a-zA-Z][a-zA-Z0-9_\-\/]*)"
             ).unwrap(),
-            // Inline code span `...`
-            inline_code_re: Regex::new(r"`[^`]*`").unwrap(),
-            // Inline & block math
-            inline_math_re: Regex::new(r"\$\$[^\$]+\$\$|\$[^\$\n]+\$").unwrap(),
             // Markdown heading line ^(#{1,6})\s+(.*)$
             heading_re: Regex::new(r"^(?P<hashes>#{1,6})\s+(?P<title>.*)$").unwrap(),
             // Standard markdown link [text](url)
@@ -99,11 +93,12 @@ impl MarkdownParser {
         let mut sections: Vec<AstSection> = Vec::new();
         let mut heading_stack: Vec<(u8, String, String)> = Vec::new(); // (level, id, heading)
         let mut first_h1_title: Option<String> = None;
+        let path_slug = slugify(&path.to_string_lossy());
 
         if headings.is_empty() {
             // Document has no headings: create root overview section
             sections.push(AstSection {
-                id: format!("{}#overview", slugify(&default_title)),
+                id: format!("{path_slug}#overview"),
                 heading: default_title.clone(),
                 level: 1,
                 parent_id: None,
@@ -128,7 +123,7 @@ impl MarkdownParser {
                 }
 
                 let slug = slugify(h_text);
-                let section_id = format!("{}#{}", slugify(&default_title), slug);
+                let section_id = format!("{path_slug}::{idx}#{slug}");
                 let parent_id = heading_stack.last().map(|(_, id, _)| id.clone());
 
                 let mut breadcrumbs: Vec<String> =
@@ -186,19 +181,20 @@ impl MarkdownParser {
             });
         }
 
-        for (idx, line) in lines.iter().enumerate() {
-            if code_block_mask[idx] {
-                continue;
-            }
+        let masked_body = mask_code_and_math(body);
+        let masked_lines: Vec<&str> = masked_body.lines().collect();
 
+        for (idx, masked_line) in masked_lines.iter().enumerate() {
             let line_num = line_offset + idx + 1;
             let current_section_id = sections
                 .iter()
                 .find(|s| line_num >= s.line_start && line_num <= s.line_end)
                 .map(|s| s.id.clone());
 
-            // A. Wikilinks & Embeds (raw line to preserve syntax)
-            for cap in self.wikilink_re.captures_iter(line) {
+            let raw_snippet = lines.get(idx).map(|s| s.trim().to_string());
+
+            // A. Wikilinks & Embeds
+            for cap in self.wikilink_re.captures_iter(masked_line) {
                 let is_embed = cap.name("embed").is_some();
                 let target_raw = cap.name("target").map(|m| m.as_str().trim()).unwrap_or("");
                 let heading_target = cap.name("heading").map(|m| m.as_str().trim().to_string());
@@ -210,8 +206,6 @@ impl MarkdownParser {
                 let alias = cap.name("alias").map(|m| m.as_str().trim().to_string());
 
                 if !target_raw.is_empty() {
-                    let snippet = line.trim().to_string();
-
                     links.push(AstLink {
                         link_type: if is_embed {
                             LinkType::Embed
@@ -223,14 +217,14 @@ impl MarkdownParser {
                         target_block: block_target,
                         alias,
                         line_number: line_num,
-                        context_snippet: Some(snippet),
+                        context_snippet: raw_snippet.clone(),
                         source_section_id: current_section_id.clone(),
                     });
                 }
             }
 
             // B. Standard Markdown Links
-            for cap in self.markdown_link_re.captures_iter(line) {
+            for cap in self.markdown_link_re.captures_iter(masked_line) {
                 let text = cap.name("text").map(|m| m.as_str().trim().to_string());
                 let url = cap.name("url").map(|m| m.as_str().trim()).unwrap_or("");
                 let is_internal_md = url.ends_with(".md")
@@ -247,16 +241,14 @@ impl MarkdownParser {
                         target_block: None,
                         alias: text,
                         line_number: line_num,
-                        context_snippet: Some(line.trim().to_string()),
+                        context_snippet: raw_snippet.clone(),
                         source_section_id: current_section_id.clone(),
                     });
                 }
             }
 
-            // C. Tags (strip inline code and math first so `def #foo` or $x # y$ is ignored)
-            let sanitized_line = self.inline_code_re.replace_all(line, " ");
-            let sanitized_line = self.inline_math_re.replace_all(&sanitized_line, " ");
-            for cap in self.tag_re.captures_iter(&sanitized_line) {
+            // C. Tags
+            for cap in self.tag_re.captures_iter(masked_line) {
                 if let Some(tag_match) = cap.name("tag") {
                     let tag_str = tag_match.as_str().trim();
                     if !tag_str.is_empty()
@@ -272,7 +264,7 @@ impl MarkdownParser {
             }
 
             // D. Dataview Inline Attributes [key:: value] and key:: value
-            for cap in self.dataview_bracket_re.captures_iter(line) {
+            for cap in self.dataview_bracket_re.captures_iter(masked_line) {
                 if let (Some(k), Some(v)) = (cap.name("key"), cap.name("val")) {
                     attributes.push(MetadataField {
                         key: k.as_str().trim().to_string(),
@@ -282,7 +274,7 @@ impl MarkdownParser {
                     });
                 }
             }
-            for cap in self.dataview_inline_re.captures_iter(line) {
+            for cap in self.dataview_inline_re.captures_iter(masked_line) {
                 if let (Some(k), Some(v)) = (cap.name("key"), cap.name("val")) {
                     let key_str = k.as_str().trim().to_string();
                     if !attributes.iter().any(|a| a.key == key_str && a.line_number == line_num) {
@@ -298,7 +290,7 @@ impl MarkdownParser {
         }
 
         // 4. Generate Semantic Chunks
-        let chunks = self.generate_chunks(&final_title, &sections, body, line_offset);
+        let chunks = self.generate_chunks(&path_slug, &final_title, &sections, body, line_offset);
 
         Ok(ParsedDocument {
             path: path.to_path_buf(),
@@ -316,13 +308,13 @@ impl MarkdownParser {
 
     fn generate_chunks(
         &self,
+        path_slug: &str,
         doc_title: &str,
         sections: &[AstSection],
         body: &str,
         line_offset: usize,
     ) -> Vec<AstChunk> {
         let mut chunks = Vec::new();
-        let doc_slug = slugify(doc_title);
 
         for (sec_idx, sec) in sections.iter().enumerate() {
             let breadcrumbs_str = sec.breadcrumbs.join(" > ");
@@ -335,7 +327,7 @@ impl MarkdownParser {
             let words: Vec<&str> = content.split_whitespace().collect();
             if words.len() <= 400 {
                 chunks.push(AstChunk {
-                    chunk_id: format!("{doc_slug}::{sec_idx}::0"),
+                    chunk_id: format!("{path_slug}::{sec_idx}::0"),
                     section_id: Some(sec.id.clone()),
                     title: doc_title.to_string(),
                     breadcrumbs: breadcrumbs_str,
@@ -358,7 +350,7 @@ impl MarkdownParser {
 
                     if current_chunk_words + p_words > 300 && !current_chunk_text.is_empty() {
                         chunks.push(AstChunk {
-                            chunk_id: format!("{doc_slug}::{sec_idx}::{chunk_sub_idx}"),
+                            chunk_id: format!("{path_slug}::{sec_idx}::{chunk_sub_idx}"),
                             section_id: Some(sec.id.clone()),
                             title: doc_title.to_string(),
                             breadcrumbs: breadcrumbs_str.clone(),
@@ -380,7 +372,7 @@ impl MarkdownParser {
 
                 if !current_chunk_text.is_empty() {
                     chunks.push(AstChunk {
-                        chunk_id: format!("{doc_slug}::{sec_idx}::{chunk_sub_idx}"),
+                        chunk_id: format!("{path_slug}::{sec_idx}::{chunk_sub_idx}"),
                         section_id: Some(sec.id.clone()),
                         title: doc_title.to_string(),
                         breadcrumbs: breadcrumbs_str,
@@ -394,7 +386,7 @@ impl MarkdownParser {
 
         if chunks.is_empty() && !body.trim().is_empty() {
             chunks.push(AstChunk {
-                chunk_id: format!("{doc_slug}::0::0"),
+                chunk_id: format!("{path_slug}::0::0"),
                 section_id: None,
                 title: doc_title.to_string(),
                 breadcrumbs: doc_title.to_string(),
@@ -452,9 +444,7 @@ pub fn mask_code_and_math(content: &str) -> String {
                         while i < len && bytes[i] != b'\n' {
                             i += 1;
                         }
-                        for k in start..i.min(len) {
-                            masked[k] = true;
-                        }
+                        masked[start..i.min(len)].fill(true);
                         break;
                     }
                     i += 1;
@@ -474,9 +464,7 @@ pub fn mask_code_and_math(content: &str) -> String {
             while i + 1 < len {
                 if bytes[i] == b'$' && bytes[i + 1] == b'$' && bytes[i - 1] != b'\\' {
                     i += 2;
-                    for k in start..i {
-                        masked[k] = true;
-                    }
+                    masked[start..i].fill(true);
                     break;
                 }
                 i += 1;
@@ -497,9 +485,7 @@ pub fn mask_code_and_math(content: &str) -> String {
             }
             if i < len && bytes[i] == b'`' {
                 i += 1;
-                for k in start..i {
-                    masked[k] = true;
-                }
+                masked[start..i].fill(true);
                 continue;
             }
         }
@@ -517,9 +503,7 @@ pub fn mask_code_and_math(content: &str) -> String {
             }
             if i < len && bytes[i] == b'$' && bytes[i - 1] != b'\\' {
                 i += 1;
-                for k in start..i {
-                    masked[k] = true;
-                }
+                masked[start..i].fill(true);
                 continue;
             }
         }

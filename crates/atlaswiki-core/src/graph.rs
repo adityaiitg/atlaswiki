@@ -114,7 +114,7 @@ impl KnowledgeGraph {
 
         // Pass 1: Insert all document nodes
         for doc in docs {
-            let doc_id = doc.title.clone();
+            let doc_id = doc.path.to_string_lossy().to_string();
             let tags: Vec<String> = doc.tags.iter().map(|t| t.name.clone()).collect();
 
             let node = NoteNode {
@@ -129,22 +129,28 @@ impl KnowledgeGraph {
 
             let idx = kg.graph.add_node(node);
             kg.node_map.insert(doc_id.clone(), idx);
-            kg.title_map.insert(doc.title.to_lowercase(), idx);
+            kg.node_map.entry(doc.title.clone()).or_insert(idx);
+            kg.title_map.entry(doc.title.to_lowercase()).or_insert(idx);
+            if let Some(stem) = doc.path.file_stem() {
+                let stem_str = stem.to_string_lossy().to_lowercase();
+                kg.title_map.entry(stem_str).or_insert(idx);
+            }
 
             for alias in &doc.frontmatter.aliases {
-                kg.alias_map.insert(alias.to_lowercase(), idx);
+                kg.alias_map.entry(alias.to_lowercase()).or_insert(idx);
             }
         }
 
         // Pass 2: Insert edges (wikilinks, embeds, standard links)
         for doc in docs {
-            let source_idx = match kg.node_map.get(&doc.title) {
+            let doc_id = doc.path.to_string_lossy().to_string();
+            let source_idx = match kg.node_map.get(&doc_id).or_else(|| kg.node_map.get(&doc.title)) {
                 Some(&idx) => idx,
                 None => continue,
             };
 
             for link in &doc.links {
-                let target_idx = kg.resolve_or_create_dangling(&link.target_note);
+                let target_idx = kg.resolve_or_create_dangling(Some(&doc.path), &link.target_note);
 
                 let (edge_type, weight) = match link.link_type {
                     LinkType::Embed => (EdgeType::Embed, 2.0),
@@ -175,13 +181,39 @@ impl KnowledgeGraph {
     }
 
     /// Resolves target note to NodeIndex, or creates a Dangling note node.
-    fn resolve_or_create_dangling(&mut self, target_note: &str) -> NodeIndex {
-        let lower = target_note.to_lowercase();
+    fn resolve_or_create_dangling(&mut self, from_doc_path: Option<&std::path::Path>, target_note: &str) -> NodeIndex {
+        let clean = target_note.trim_end_matches(".md").trim();
+        let p = std::path::PathBuf::from(clean);
+        let normalized = if let Ok(stripped) = p.strip_prefix("./") {
+            stripped.to_path_buf()
+        } else {
+            p.clone()
+        };
+        let norm_str = normalized.to_string_lossy().to_string();
+        let with_md_str = format!("{norm_str}.md");
 
-        if let Some(&idx) = self.title_map.get(&lower) {
+        if let Some(&idx) = self.node_map.get(&norm_str).or_else(|| self.node_map.get(&with_md_str)) {
             return idx;
         }
-        if let Some(&idx) = self.alias_map.get(&lower) {
+
+        if let Some(source_path) = from_doc_path {
+            if let Some(parent) = source_path.parent() {
+                let rel = parent.join(&normalized);
+                let rel_str = rel.to_string_lossy().to_string();
+                let rel_md_str = format!("{rel_str}.md");
+                if let Some(&idx) = self.node_map.get(&rel_str).or_else(|| self.node_map.get(&rel_md_str)) {
+                    return idx;
+                }
+            }
+        }
+
+        let lower = target_note.to_lowercase();
+        let clean_lower = clean.to_lowercase();
+
+        if let Some(&idx) = self.title_map.get(&clean_lower).or_else(|| self.title_map.get(&lower)) {
+            return idx;
+        }
+        if let Some(&idx) = self.alias_map.get(&clean_lower).or_else(|| self.alias_map.get(&lower)) {
             return idx;
         }
         if let Some(&idx) = self.node_map.get(target_note) {
